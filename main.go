@@ -3,9 +3,21 @@ package main
 import (
     "context"
     "fmt"
+    "log"
+	"net/http"
     "time"
     "strconv"
 	"strings"
+    "os"
+
+    _ "github.com/mattn/go-sqlite3"
+	"github.com/mdp/qrterminal"
+	"go.mau.fi/whatsmeow"
+	waProto "go.mau.fi/whatsmeow/binary/proto"
+	"go.mau.fi/whatsmeow/store/sqlstore"
+	"go.mau.fi/whatsmeow/types"
+	waLog "go.mau.fi/whatsmeow/util/log"
+	"google.golang.org/protobuf/proto"
 
     "cloud.google.com/go/firestore"
     "google.golang.org/api/option"
@@ -18,6 +30,7 @@ type DataBranch struct {
 }
 
 type TransactionSummaries struct {
+    Date string `firestore:"date"`
     PaymentTypes map[string]map[string]map[string]float64 `firestore:"payment_types"`
 }
 
@@ -25,11 +38,59 @@ type EmployeeShifts struct {
     StartCash   float64                 `firestore:"start_cash"`
     EndCash     *float64                `firestore:"end_cash"`
     StartTime   time.Time               `firestore:"start_time"`
-    CashEntries map[string]interface{}  `firestore:"cash_entries"`
+    CashEntries []interface{}           `firestore:"cash_entries"`
 }
 
 type activeOrderGroup struct {
+    DeletedAt *time.Time `firestore:"deleted_at"`
     Orders map[string]map[string]interface{} `firestore:"orders"`
+}
+
+func WAConnect() (*whatsmeow.Client, error) {
+	container, err := sqlstore.New("sqlite3", "file:wapp.db?_foreign_keys=on", waLog.Noop)
+	if err != nil {
+		return nil, err
+	}
+	deviceStore, err := container.GetFirstDevice()
+	if err != nil {
+		panic(err)
+	}
+	client := whatsmeow.NewClient(deviceStore, waLog.Noop)
+	if client.Store.ID == nil {
+		// No ID stored, new login
+		qrChan, _ := client.GetQRChannel(context.Background())
+		err = client.Connect()
+		if err != nil {
+			return nil, err
+		}
+		for evt := range qrChan {
+			if evt.Event == "code" {
+				qrterminal.GenerateHalfBlock(evt.Code, qrterminal.L, os.Stdout)
+			} else {
+				fmt.Println("Login event:", evt.Event)
+			}
+		}
+	} else {
+		err := client.Connect()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return client, nil
+}
+
+func sendMessage(ctx context.Context, wac *whatsmeow.Client, user string, msg string) (error){
+    _, err := wac.SendMessage(ctx, types.JID{
+		User:   "6282269305789",
+		Server: types.DefaultUserServer,
+	}, &waProto.Message{
+			Conversation: proto.String(msg),
+	})
+	// Check if an error occurred
+	if err != nil {
+		return err
+	} 
+    return nil
 }
 
 func interfaceToFloat64(value interface{}) float64 {
@@ -70,14 +131,24 @@ func addCommasToInteger(value int) string {
 	return strings.Join(parts, ",")
 }
 
-func main() {
+func handler(w http.ResponseWriter, r *http.Request) {
     mainCtx := context.Background()
     client, err := firestore.NewClient(mainCtx, "lucy-cashier-dev", option.WithCredentialsFile("service-account.json"))
     if err != nil {
         fmt.Println(err)
         panic(err)
     }
-    today := "03-12-2023"
+    wac, err := WAConnect()
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	defer wac.Disconnect()
+
+    // Get today's date
+	now := time.Now()
+	year, month, day := now.Date()
+    today := fmt.Sprintf("%d-%02d-%02d", year, month, day)
     
     iter := client.Collection("branches").Documents(mainCtx)
     
@@ -95,6 +166,11 @@ func main() {
         if err := doc.DataTo(&branch); err != nil {
             fmt.Println("failed parsing branch")
             panic(err)
+        }
+
+        if branch.Whatsapp == nil {
+            fmt.Println("Error cannot find whatsapp account")
+            continue
         }
 
         msg += fmt.Sprintf("Untuk cabang: %s\n", branch.Name)
@@ -137,7 +213,7 @@ func main() {
         msg += fmt.Sprintf("Laporan Kas\n")
         employee_shifts_iter := client.Collection("employee_shifts").
             Where("branch_uuid", "==", branch.UUID).
-            Where("deleted_at", "==", nil).
+            Where("date", "==", today).
             Documents(mainCtx)
         for {
             snap, err := employee_shifts_iter.Next()
@@ -165,7 +241,7 @@ func main() {
                 msg += fmt.Sprintf("Total Kas: %s", formatCurrency(total_expanse))
             } else {
                 // EndCash is absent in Firestore (or its value is nil)
-                msg += fmt.Sprintf("EndCash is absent or nil, cannot compute total cash")
+                msg += fmt.Sprintf("EndCash is absent or nil, cannot compute total cash\n")
             }
 
         }
@@ -225,6 +301,25 @@ func main() {
         msg += fmt.Sprintf("Pesanan Tertampung\n")
         msg += formatCurrency(tertampung)
         fmt.Println(msg)
+        
+        err = sendMessage(mainCtx, wac, fmt.Sprintf("%s%s", branch.Whatsapp["country_code"], branch.Whatsapp["number"]), msg)
+        if err != nil {
+            fmt.Println(err)
+        }
     }
+	
+}
 
+func main() {
+    log.Print("starting server...")
+
+	http.HandleFunc("/", handler)
+
+	port := os.Getenv("PORT")
+	if port == "" {
+			port = "8080"
+	}
+
+	log.Printf("listening on port %s", port)
+	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%s", port), nil))    
 }
