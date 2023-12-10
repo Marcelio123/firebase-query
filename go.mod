@@ -1,6 +1,6 @@
 module example.com/query-firebase
 
-go 1.21.3
+go 1.20
 
 require (
 	cloud.google.com/go/firestore v1.14.0
