@@ -5,16 +5,16 @@ import "time"
 type ActiveOrderGroup struct {
 	DeletedAt *time.Time `firestore:"deleted_at"`
 	UUID      string     `firstore:"uuid"`
-	Orders    []Order    `firestore:"orders"`
+	Orders    map[string]Order    `firestore:"orders"`
 }
 
 type Order struct {
 	UUID      string `firestore:"uuid"`
 	CreatedBy string `firestore:"created_by"`
 
-	Item      OrderItem       `firestore:"item"`
-	Modifiers []OrderModifier `firestore:"modifiers"`
-	Discounts []OrderDiscount `firestore:"discounts"`
+	Item      OrderItem       			`firestore:"item"`
+	Modifiers map[string]OrderModifier	`firestore:"modifiers"`
+	Discounts map[string]OrderDiscount	`firestore:"discounts"`
 
 	Quantity         int          `firestore:"quantity"`
 	RefundedQuantity int          `firestore:"refunded_quantity"`
@@ -40,30 +40,30 @@ type OrderItem struct {
 }
 
 type OrderDiscount struct {
-	UUID    string  `bson:"uuid" json:"uuid"`
-	Name    string  `bson:"name" json:"name"`
-	Fixed   float64 `bson:"fixed" json:"fixed"`
-	Percent float32 `bson:"percent" json:"percent"`
+	UUID    string  `firestore:"uuid"`
+	Name    string  `firestore:"name"`
+	Fixed   float64 `firestore:"fixed"`
+	Percent float32 `firestore:"percent"`
 }
 
 type OrderVariant struct {
-	UUID        string  `bson:"uuid" json:"uuid"`
-	Label       string  `bson:"label" json:"label"`
-	ImagePath   string  `bson:"image_path,omitempty" json:"image_path,omitempty"`
-	Description string  `bson:"description" json:"description"`
-	Price       float64 `bson:"price" json:"price"`
+	UUID        string  `firestore:"uuid"`
+	Label       string  `firestore:"label"`
+	ImagePath   string  `firestore:"image_path,omitempty"`
+	Description string  `firestore:"description"`
+	Price       float64 `firestore:"price"`
 }
 
 type OrderModifier struct {
-	UUID             string  `bson:"uuid" json:"uuid"`
-	Name             string  `bson:"name" json:"name"`
-	Quantity         int     `bson:"quantity" json:"quantity"`
-	RefundedQuantity int     `bson:"refunded_quantity" json:"refunded_quantity"`
-	Price            float64 `bson:"price" json:"price"`
+	UUID             string  `firestore:"uuid"`
+	Name             string  `firestore:"name"`
+	Quantity         int     `firestore:"quantity"`
+	RefundedQuantity int     `firestore:"refunded_quantity"`
+	Price            float64 `firestore:"price"`
 }
 
 // TODO: Check this data structure exists
 type OrderWaiter struct {
-	UUID string `bson:"uuid" json:"uuid"`
-	Name string `bson:"name" json:"name"`
+	UUID string `firestore:"uuid"`
+	Name string `firestore:"name"`
 }

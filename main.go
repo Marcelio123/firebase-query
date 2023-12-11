@@ -6,78 +6,38 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"strconv"
-	"strings"
-	"sync"
 
+	"example.com/query-firebase/math"
 	"example.com/query-firebase/model"
 	"example.com/query-firebase/whatsapp"
 	_ "github.com/mattn/go-sqlite3"
+	"go.mau.fi/whatsmeow"
+	"google.golang.org/api/option"
 
 	"cloud.google.com/go/firestore"
 )
 
-var (
-	processedRequests = make(map[string]bool)
-	mu                sync.Mutex
-)
-
-// func interfaceToFloat64(value interface{}) float64 {
-// 	// Checking the type and handling it  accordingly
-// 	switch v := value.(type) {
-// 	case int:
-// 		return float64(value.(int))
-// 	case int64:
-// 		return float64(value.(int64))
-// 	case float32:
-// 		return float64(value.(float32))
-// 	case float64:
-// 		return value.(float64)
-// 	default:
-// 		// Handle other types or unknown types
-// 		fmt.Println("Unknown Type or Value:", v)
-// 		return 0
-// 	}
-// }
-
-func formatCurrency(value float64) string {
-	intPart := int(value)
-	decimalPart := int((value - float64(intPart)) * 100)
-	intString := addCommasToInteger(intPart)
-	return fmt.Sprintf("Rp. %s,%02d", intString, decimalPart)
-}
-
-func addCommasToInteger(value int) string {
-	strValue := strconv.Itoa(value)
-	var parts []string
-	for i := len(strValue); i > 0; i -= 3 {
-		start := i - 3
-		if start < 0 {
-			start = 0
-		}
-		parts = append([]string{strValue[start:i]}, parts...)
-	}
-	return strings.Join(parts, ",")
-}
+var wac *whatsmeow.Client
 
 func handler(w http.ResponseWriter, r *http.Request) {
-	requestID := r.Header.Get("X-Request-ID")
-
-	mu.Lock()
-	defer mu.Unlock()
-
 	mainCtx := context.Background()
-	client, err := firestore.NewClient(mainCtx, "lucy-cashier-dev")
+	client, err := firestore.NewClient(mainCtx, "lucy-cashier-dev", option.WithCredentialsFile("service-account.json"))
 	if err != nil {
 		fmt.Println(err)
 		panic(err)
 	}
-	wac, err := whatsapp.Connect()
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-	defer wac.Disconnect()
+
+    if wac.IsLoggedIn() {
+        log.Println("Whatsapp client is still logged in")
+    } else {
+        log.Println("Trying to connect the client")
+        var err error
+        wac, err = whatsapp.Connect()
+        if err != nil {
+            log.Println("Failed to connect the client. ", err)
+            return
+        }
+    }
 
 	// Get today's date
 	// now := time.Now()
@@ -130,55 +90,54 @@ func handler(w http.ResponseWriter, r *http.Request) {
 				panic(err)
 			}
 
-			for _, payment := range transaction_summaries.PaymentTypes {
-				for key, value := range payment {
-					total := value["total"]
+			for _, payment_group := range transaction_summaries.PaymentTypes {
+				for key, payment_name := range payment_group {
+					total := payment_name.Total
 					branch_payment[key] += total
 				}
 			}
 
 			for key, value := range branch_payment {
-				msg += fmt.Sprintf("%s: %s\n", key, formatCurrency(value))
+				msg += fmt.Sprintf("%s: %s\n", key, math.FormatCurrency(value))
 			}
-			msg += fmt.Sprintf("Total penjualan: %s\n", formatCurrency(transaction_summaries.TotalSales))
+			msg += fmt.Sprintf("Total penjualan: %s\n", math.FormatCurrency(transaction_summaries.TotalSales))
 		}
 
-		//Laporan kas
-		// msg += fmt.Sprintf("Laporan Kas\n")
-		// employee_shifts_iter := client.Collection("employee_shifts").
-		//     Where("branch_uuid", "==", branch.UUID).
-		//     Where("date", "==", today).
-		//     Documents(mainCtx)
-		// for {
-		//     snap, err := employee_shifts_iter.Next()
-		//     if err != nil {
-		//         fmt.Println(err)
-		//         break
-		//     }
+		// Laporan kas
+		msg += fmt.Sprintf("Laporan Kas\n")
+		employee_shifts_iter := client.Collection("employee_shifts").
+		    Where("branch_uuid", "==", branch.UUID).
+		    Where("date", "==", today).
+		    Documents(mainCtx)
+		for {
+		    snap, err := employee_shifts_iter.Next()
+		    if err != nil {
+		        fmt.Println(err)
+		        break
+		    }
 
-		//     var employee_shifts EmployeeShifts
-		//     if err := snap.DataTo(&employee_shifts); err != nil {
-		//         fmt.Println("failed parsing employee shifts")
-		//         panic(err)
-		//     }
-		//     msg += fmt.Sprintf("Kas awal: %s", formatCurrency(employee_shifts.StartCash))
-		//     var total_expanse float64
-		//     for _, value := range employee_shifts.CashEntries {
-		//         cash_entry := value.(map[string]interface{})
-		//         msg += fmt.Sprintf("- %s %s", cash_entry["description"], formatCurrency(cash_entry["value"].(float64)))
-		//         total_expanse += cash_entry["value"].(float64)
-		//     }
-		//     if employee_shifts.EndCash != nil {
-		//         // EndCash exists in Firestore, and its value is not nil
-		//         // Perform computation
-		//         total_expanse = employee_shifts.StartCash + *employee_shifts.EndCash
-		//         msg += fmt.Sprintf("Total Kas: %s", formatCurrency(total_expanse))
-		//     } else {
-		//         // EndCash is absent in Firestore (or its value is nil)
-		//         msg += fmt.Sprintf("EndCash is absent or nil, cannot compute total cash\n")
-		//     }
+		    var employee_shifts model.EmployeeShifts
+		    if err := snap.DataTo(&employee_shifts); err != nil {
+		        fmt.Println("failed parsing employee shifts")
+		        panic(err)
+		    }
+		    msg += fmt.Sprintf("Kas awal: %s", math.FormatCurrency(employee_shifts.StartCash))
+		    var total_expanse float64
+		    for _, value := range employee_shifts.CashEntries {
+		        msg += fmt.Sprintf("- %s %s", value.Description, math.FormatCurrency(value.Value))
+		        total_expanse += value.Value
+		    }
+		    if employee_shifts.EndCash != nil {
+		        // EndCash exists in Firestore, and its value is not nil
+		        // Perform computation
+		        total_expanse = employee_shifts.StartCash + *employee_shifts.EndCash
+		        msg += fmt.Sprintf("Total Kas: %s", math.FormatCurrency(total_expanse))
+		    } else {
+		        // EndCash is absent in Firestore (or its value is nil)
+		        msg += fmt.Sprintf("EndCash is absent or nil, cannot compute total cash\n")
+		    }
 
-		// }
+		}
 
 		var tertampung float64
 		activeOrderGroupIter := client.Collection("active_order_groups").
@@ -229,27 +188,34 @@ func handler(w http.ResponseWriter, r *http.Request) {
 				}
 				price -= total_discount
 
-				msg += fmt.Sprintf("%s %s\n", orderGroup.UUID, formatCurrency(price))
+				msg += fmt.Sprintf("%s %s\n", orderGroup.UUID, math.FormatCurrency(price))
 				tertampung += price
 			}
 		}
-		msg += fmt.Sprintf("Total Pesanan Tertampung\n %s", formatCurrency(tertampung))
+		msg += fmt.Sprintf("Total Pesanan Tertampung\n %s", math.FormatCurrency(tertampung))
 
 		//err = sendMessage(mainCtx, wac, fmt.Sprintf("%s%s", branch.Whatsapp["country_code"], branch.Whatsapp["number"]), msg)
 		err = whatsapp.SendMessage(mainCtx, wac, fmt.Sprintf("%s%s", "62", "82269305789"), msg)
 		if err != nil {
 			log.Print(err)
 		} else {
-			log.Printf("Message sent:\n%s", msg)
+			log.Println("Message sent")
 		}
 	}
-
-	processedRequests[requestID] = true
 
 }
 
 func main() {
 	log.Print("starting server...")
+    var err error
+
+    wac, err = whatsapp.Connect()
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	defer wac.Disconnect()
+
 
 	http.HandleFunc("/", handler)
 
