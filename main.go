@@ -6,18 +6,16 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"example.com/query-firebase/math"
 	"example.com/query-firebase/model"
 	"example.com/query-firebase/whatsapp"
 	_ "github.com/mattn/go-sqlite3"
-	"go.mau.fi/whatsmeow"
 	"google.golang.org/api/option"
 
 	"cloud.google.com/go/firestore"
 )
-
-var wac *whatsmeow.Client
 
 func handler(w http.ResponseWriter, r *http.Request) {
 	mainCtx := context.Background()
@@ -27,23 +25,17 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		panic(err)
 	}
 
-    if wac.IsLoggedIn() {
-        log.Println("Whatsapp client is still logged in")
-    } else {
-        log.Println("Trying to connect the client")
-        var err error
-        wac, err = whatsapp.Connect()
-        if err != nil {
-            log.Println("Failed to connect the client. ", err)
-            return
-        }
-    }
+    wac, err := whatsapp.Connect()
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	defer wac.Disconnect()
 
 	// Get today's date
-	// now := time.Now()
-	// year, month, day := now.Date()
-	// today := fmt.Sprintf("%d-%02d-%02d", year, month, day)
-	today := "08-12-2023"
+	now := time.Now()
+	year, month, day := now.Date()
+	today := fmt.Sprintf("%d-%02d-%02d", year, month, day)
 
 	iter := client.Collection("branches").Documents(mainCtx)
 
@@ -61,11 +53,6 @@ func handler(w http.ResponseWriter, r *http.Request) {
 			fmt.Println("failed parsing branch")
 			panic(err)
 		}
-
-		// if branch.Whatsapp == nil {
-		//     fmt.Println("Error cannot find whatsapp account")
-		//     continue
-		// }
 
 		msg += fmt.Sprintf("Untuk cabang: %s\n", branch.Name)
 		msg += fmt.Sprintf("Penjualan %s pada tanggal %s telah di jumlahkan di bawah.\n", branch.Name, today)
@@ -100,6 +87,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 			for key, value := range branch_payment {
 				msg += fmt.Sprintf("%s: %s\n", key, math.FormatCurrency(value))
 			}
+			msg += fmt.Sprintf("Total diskon: %s\n", math.FormatCurrency(transaction_summaries.TotalDiscount))
 			msg += fmt.Sprintf("Total penjualan: %s\n", math.FormatCurrency(transaction_summaries.TotalSales))
 		}
 
@@ -194,12 +182,11 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		}
 		msg += fmt.Sprintf("Total Pesanan Tertampung\n %s", math.FormatCurrency(tertampung))
 
-		//err = sendMessage(mainCtx, wac, fmt.Sprintf("%s%s", branch.Whatsapp["country_code"], branch.Whatsapp["number"]), msg)
-		err = whatsapp.SendMessage(mainCtx, wac, fmt.Sprintf("%s%s", "62", "82269305789"), msg)
+		resp, err := whatsapp.SendMessage(mainCtx, wac, fmt.Sprintf("%s%s", branch.Whatsapp.CountryNumber, branch.Whatsapp.Number), msg)
 		if err != nil {
-			log.Print(err)
+			log.Println(resp.ID, err)
 		} else {
-			log.Println("Message sent")
+			log.Printf("Message sent successfully to branch %s.\n", branch.Name)
 		}
 	}
 
@@ -207,15 +194,6 @@ func handler(w http.ResponseWriter, r *http.Request) {
 
 func main() {
 	log.Print("starting server...")
-    var err error
-
-    wac, err = whatsapp.Connect()
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-	defer wac.Disconnect()
-
 
 	http.HandleFunc("/", handler)
 
